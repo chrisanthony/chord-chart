@@ -99,17 +99,18 @@ function generateVoicing(name: string): number[] | null {
   return notes;
 }
 
-// ── MIDI → note name (soundfont-player format: "C4", "A#3", etc.) ────────────
+// ── MIDI helpers ──────────────────────────────────────────────────────────────
 
-const NOTE_NAMES_SF = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
-
-function midiToNoteName(midi: number): string {
-  const octave = Math.floor(midi / 12) - 1;
-  const note   = NOTE_NAMES_SF[midi % 12];
-  return `${note}${octave}`;
+function midiToHz(midi: number): number {
+  return 440 * Math.pow(2, (midi - 69) / 12);
 }
 
-// ── Audio context + master compressor (used by metronome click) ───────────────
+const NOTE_NAMES_SF = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+function midiToNoteName(midi: number): string {
+  return `${NOTE_NAMES_SF[midi % 12]}${Math.floor(midi / 12) - 1}`;
+}
+
+// ── Audio context + master compressor ────────────────────────────────────────
 
 let ac: AudioContext | null = null;
 let compressor: DynamicsCompressorNode | null = null;
@@ -124,14 +125,133 @@ function getAC(): AudioContext {
     compressor.attack.value = 0.002;
     compressor.release.value = 0.3;
     compressor.connect(ac.destination);
-    // Kick off preload of the default instrument
-    loadInstrument(ac, SF_NAMES['acoustic-guitar']).catch(() => {});
   }
   if (ac.state === 'suspended') ac.resume();
   return ac;
 }
 
-// ── Soundfont instrument cache ────────────────────────────────────────────────
+// ── Web Audio synthesis (instant, no CDN) ────────────────────────────────────
+// Used immediately on every tap; samples upgrade this once loaded.
+
+/** Karplus-Strong pluck — acoustic guitar */
+function pluck(ctx: AudioContext, dest: AudioNode, hz: number, when: number, dur: number) {
+  const sr = ctx.sampleRate, period = Math.round(sr / hz), len = Math.ceil(sr * dur);
+  const buf = ctx.createBuffer(1, len, sr);
+  const d = buf.getChannelData(0);
+  for (let i = 0; i < period; i++) d[i] = Math.random() * 2 - 1;
+  for (let i = 1; i < period; i++) d[i] = d[i] * 0.5 + d[i - 1] * 0.5;
+  for (let i = period; i < len; i++) d[i] = 0.994 * (d[i - period] + d[i - period + 1]) / 2;
+  const src = ctx.createBufferSource(); src.buffer = buf;
+  const env = ctx.createGain();
+  env.gain.setValueAtTime(0, when);
+  env.gain.linearRampToValueAtTime(1, when + 0.004);
+  src.connect(env); env.connect(dest);
+  src.start(when); src.stop(when + dur);
+}
+
+/** Brighter KS + mild overdrive — electric guitar */
+function pluckElectric(ctx: AudioContext, dest: AudioNode, hz: number, when: number, dur: number) {
+  const sr = ctx.sampleRate, period = Math.round(sr / hz), len = Math.ceil(sr * dur);
+  const buf = ctx.createBuffer(1, len, sr);
+  const d = buf.getChannelData(0);
+  for (let i = 0; i < period; i++) d[i] = Math.random() * 2 - 1;
+  for (let i = 1; i < period; i++) d[i] = d[i] * 0.7 + d[i - 1] * 0.3;
+  for (let i = period; i < len; i++) d[i] = 0.996 * (d[i - period] + d[i - period + 1]) / 2;
+  const src = ctx.createBufferSource(); src.buffer = buf;
+  const lpf = ctx.createBiquadFilter(); lpf.type = 'lowpass'; lpf.frequency.value = 8000;
+  const ws = ctx.createWaveShaper();
+  const k = 15, n = 256, curve = new Float32Array(n);
+  for (let i = 0; i < n; i++) { const x = (i * 2) / n - 1; curve[i] = ((Math.PI + k) * x) / (Math.PI + k * Math.abs(x)); }
+  ws.curve = curve; ws.oversample = '2x';
+  const env = ctx.createGain();
+  env.gain.setValueAtTime(0, when); env.gain.linearRampToValueAtTime(1, when + 0.003);
+  src.connect(lpf); lpf.connect(ws); ws.connect(env); env.connect(dest);
+  src.start(when); src.stop(when + dur);
+}
+
+/** Additive harmonics + hammer click — piano */
+function pluckPiano(ctx: AudioContext, dest: AudioNode, hz: number, when: number, dur: number) {
+  const harmonics = [1, 2, 3, 4, 5, 6];
+  const amps      = [0.60, 0.22, 0.10, 0.05, 0.025, 0.01];
+  const master = ctx.createGain();
+  master.gain.setValueAtTime(0, when);
+  master.gain.linearRampToValueAtTime(1, when + 0.005);
+  master.gain.exponentialRampToValueAtTime(0.001, when + dur);
+  master.connect(dest);
+  harmonics.forEach((h, i) => {
+    const osc = ctx.createOscillator(); osc.type = 'sine'; osc.frequency.value = hz * h;
+    const g = ctx.createGain(); g.gain.value = amps[i];
+    osc.connect(g); g.connect(master);
+    osc.start(when); osc.stop(when + dur + 0.05);
+  });
+  const nLen = Math.ceil(ctx.sampleRate * 0.015);
+  const nBuf = ctx.createBuffer(1, nLen, ctx.sampleRate);
+  const nd = nBuf.getChannelData(0);
+  for (let i = 0; i < nLen; i++) nd[i] = (Math.random() * 2 - 1) * (1 - i / nLen);
+  const nSrc = ctx.createBufferSource(); nSrc.buffer = nBuf;
+  const nGain = ctx.createGain(); nGain.gain.value = 0.04;
+  nSrc.connect(nGain); nGain.connect(dest);
+  nSrc.start(when);
+}
+
+/** Dual detuned sawtooth through LPF — synth pad */
+function pluckSynth(ctx: AudioContext, dest: AudioNode, hz: number, when: number, dur: number) {
+  const osc1 = ctx.createOscillator(); osc1.type = 'sawtooth'; osc1.frequency.value = hz;
+  const osc2 = ctx.createOscillator(); osc2.type = 'sawtooth'; osc2.frequency.value = hz * 1.006;
+  const lpf = ctx.createBiquadFilter(); lpf.type = 'lowpass'; lpf.frequency.value = 900; lpf.Q.value = 2;
+  const gain = ctx.createGain();
+  const ATTACK = 0.15, RELEASE = 0.6;
+  gain.gain.setValueAtTime(0, when);
+  gain.gain.linearRampToValueAtTime(0.08, when + ATTACK);
+  gain.gain.setValueAtTime(0.08, when + Math.max(ATTACK, dur - RELEASE));
+  gain.gain.linearRampToValueAtTime(0, when + dur);
+  osc1.connect(lpf); osc2.connect(lpf); lpf.connect(gain); gain.connect(dest);
+  osc1.start(when); osc2.start(when);
+  osc1.stop(when + dur + 0.05); osc2.stop(when + dur + 0.05);
+}
+
+/** Hammond-style drawbar sines — organ */
+function pluckOrgan(ctx: AudioContext, dest: AudioNode, hz: number, when: number, dur: number) {
+  const drawbars = [1, 2, 3, 4, 0.5];
+  const levels   = [0.50, 0.30, 0.15, 0.08, 0.10];
+  const gain = ctx.createGain();
+  gain.gain.setValueAtTime(0, when);
+  gain.gain.linearRampToValueAtTime(0.12, when + 0.005);
+  gain.gain.setValueAtTime(0.12, when + Math.max(0.005, dur - 0.04));
+  gain.gain.linearRampToValueAtTime(0, when + dur);
+  gain.connect(dest);
+  drawbars.forEach((h, i) => {
+    const osc = ctx.createOscillator(); osc.type = 'sine'; osc.frequency.value = hz * h;
+    const hg = ctx.createGain(); hg.gain.value = levels[i];
+    osc.connect(hg); hg.connect(gain);
+    osc.start(when); osc.stop(when + dur + 0.05);
+  });
+}
+
+/** Play a chord using synthesis — immediate, no loading. */
+function playSynthChord(name: string, sound: SoundType, durationSecs: number): void {
+  try {
+    const ctx  = getAC();
+    const dest = compressor!;
+    const now  = ctx.currentTime;
+    const notes = CHORD_MIDI[name] ?? generateVoicing(name) ?? [];
+    const strum = SF_STRUM[sound] ? 0.035 : 0;
+
+    notes.forEach((midi, i) => {
+      const hz   = midiToHz(midi);
+      const when = now + i * strum;
+      switch (sound) {
+        case 'acoustic-guitar': pluck(ctx, dest, hz, when, durationSecs); break;
+        case 'electric-guitar': pluckElectric(ctx, dest, hz, when, durationSecs); break;
+        case 'piano':           pluckPiano(ctx, dest, hz, when, durationSecs); break;
+        case 'synth':           pluckSynth(ctx, dest, hz, when, durationSecs); break;
+        case 'organ':           pluckOrgan(ctx, dest, hz, when, durationSecs); break;
+      }
+    });
+  } catch { /* ignore */ }
+}
+
+// ── Soundfont instrument cache (enhanced samples, loaded in background) ───────
 
 const sfCache   = new Map<string, SfPlayer>();
 const sfLoading = new Map<string, Promise<SfPlayer>>();
@@ -141,8 +261,7 @@ function loadInstrument(ctx: AudioContext, name: string): Promise<SfPlayer> {
   if (sfCache.has(name)) return Promise.resolve(sfCache.get(name)!);
   if (!sfLoading.has(name)) {
     const p = import('soundfont-player').then(sf => {
-      // In production Next.js, CJS modules imported dynamically may wrap the
-      // module as `{ default: module }` rather than spreading named exports.
+      // Handle both ESM named exports and CJS default-wrapped bundles
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const mod = (sf as any).instrument ? sf : ((sf as any).default ?? sf);
       return mod.instrument(ctx, name, {
@@ -163,29 +282,22 @@ async function playSampleChord(
 ): Promise<void> {
   const ctx = getAC();
 
-  // iOS Safari AudioContext unlock: play a 1-frame silent buffer *synchronously*
-  // (before any await) so the context stays active through the async load below.
+  // iOS Safari unlock: play a 1-frame silent buffer synchronously before any await
   try {
     const buf = ctx.createBuffer(1, 1, ctx.sampleRate);
     const src = ctx.createBufferSource();
-    src.buffer = buf;
-    src.connect(ctx.destination);
-    src.start(0);
-  } catch { /* ignore — best-effort unlock */ }
+    src.buffer = buf; src.connect(ctx.destination); src.start(0);
+  } catch { /* ignore */ }
 
-  // Stop any currently playing soundfont notes
   if (currentSfPlayer) currentSfPlayer.stop();
 
   const player = await loadInstrument(ctx, sfName);
-
-  // Belt-and-suspenders: re-resume if iOS re-suspended during the async gap
   if (ctx.state === 'suspended') { try { await ctx.resume(); } catch { /* ignore */ } }
 
   currentSfPlayer = player;
-
   const notes     = CHORD_MIDI[name] ?? generateVoicing(name) ?? [];
   const strumStep = strum ? 0.035 : 0;
-  const playAt    = ctx.currentTime; // re-read after async load
+  const playAt    = ctx.currentTime;
 
   notes.forEach((midi, i) => {
     player.play(midiToNoteName(midi), playAt + i * strumStep, {
@@ -197,30 +309,51 @@ async function playSampleChord(
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-/** Short oscillator click for the metronome.
- *  isAccent = true → downbeat (higher pitch + louder). */
+/** Short oscillator click for the metronome. */
 export function playClick(isAccent: boolean): void {
   if (typeof window === 'undefined') return;
   try {
     const ctx  = getAC();
     const osc  = ctx.createOscillator();
     const gain = ctx.createGain();
-    osc.connect(gain);
-    gain.connect(compressor!);
+    osc.connect(gain); gain.connect(compressor!);
     osc.type = 'triangle';
     osc.frequency.value = isAccent ? 1050 : 680;
     const t = ctx.currentTime;
     gain.gain.setValueAtTime(isAccent ? 0.55 : 0.30, t);
     gain.gain.exponentialRampToValueAtTime(0.001, t + 0.05);
     osc.start(t); osc.stop(t + 0.08);
-  } catch { /* ignore if Web Audio unavailable */ }
+  } catch { /* ignore */ }
 }
 
-/** Play a chord using the given sound voice.
- *  Loads the soundfont sample on first use (cached for subsequent calls). */
+/**
+ * Play a chord with the selected voice.
+ *
+ * Strategy:
+ *  1. Play synthesis *immediately* — zero loading time, works in all browsers.
+ *  2. If soundfont samples are already cached, also trigger them (they'll
+ *     overlay and sound better). On the first tap samples aren't cached yet,
+ *     so only synthesis plays. Once loaded they're used for all future taps.
+ *  3. Kick off background loading of samples so future taps upgrade automatically.
+ */
 export function playChordWithSound(name: string, sound: SoundType, durationSecs = 3): void {
   if (typeof window === 'undefined') return;
-  playSampleChord(name, SF_NAMES[sound], durationSecs, !!SF_STRUM[sound]).catch(() => {});
+
+  const sfName = SF_NAMES[sound];
+
+  if (sfCache.has(sfName)) {
+    // Samples already loaded — use them (they sound much better)
+    playSampleChord(name, sfName, durationSecs, !!SF_STRUM[sound]).catch(() => {
+      // Samples failed mid-session — fall back to synthesis
+      playSynthChord(name, sound, durationSecs);
+    });
+  } else {
+    // Samples not yet loaded — play synthesis right now for instant feedback
+    playSynthChord(name, sound, durationSecs);
+    // Also kick off background loading so next taps can upgrade to samples
+    const ctx = ac ?? getAC();
+    loadInstrument(ctx, sfName).catch(() => { /* CDN blocked or unavailable — synthesis continues */ });
+  }
 }
 
 /** Backward-compat wrapper — plays as acoustic guitar. */
