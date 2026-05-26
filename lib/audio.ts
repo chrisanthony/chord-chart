@@ -133,7 +133,7 @@ function getAC(): AudioContext {
     compressor.threshold.value = -18;
     compressor.knee.value = 10;
     compressor.ratio.value = 4;
-    compressor.attack.value = 0.002;
+    compressor.attack.value = 0.0;   // instantaneous — catches pluck transients before they hit the speaker
     compressor.release.value = 0.3;
     compressor.connect(ac.destination);
   }
@@ -330,7 +330,7 @@ function playSampleChord(
   notes.forEach((midi, i) => {
     player.play(midiToNoteName(midi), playAt + i * strumStep, {
       duration: durationSecs,
-      gain: 0.8,
+      gain: 0.3,  // 0.8 caused loud transients before the compressor could respond
     });
   });
 }
@@ -383,11 +383,9 @@ export function prewarmAudio(sound: SoundType = 'acoustic-guitar'): void {
  *    so currentTime is already advancing and startTime is never in the past.
  *
  * Playback strategy:
- *  • Samples cached  → play samples (best quality, no latency).
- *  • Samples missing → play synthesis immediately (instant, no CDN wait),
- *                      and start CDN load in background so the next tap uses samples.
- *
- * DuckDuckGo (CDN blocked): synthesis plays on every tap — no silence, no 8s wait.
+ *  • Samples cached  → play samples immediately (best quality, no latency).
+ *  • Samples loading → wait for the in-flight promise, then play (no synthesis layered on top).
+ *  • Neither cached nor loading → start loading, wait silently (CDN blocked = stay silent).
  */
 export function playChordWithSound(
   name: string,

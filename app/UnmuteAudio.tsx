@@ -34,7 +34,9 @@ function buildSilentWAV(): string {
   dv.setUint16(32, 1,  true); // block align
   dv.setUint16(34, 8,  true); // bits per sample
   str(36, 'data'); dv.setUint32(40, samples, true);
-  // buf[44..] is already zeroed — 1 second of digital silence
+  // 8-bit unsigned PCM: silence = 128 (midpoint of 0–255). Zero is max-negative
+  // amplitude and causes an audible click at every loop boundary.
+  buf.fill(128, 44);
   let bin = '';
   buf.forEach(b => (bin += String.fromCharCode(b)));
   return 'data:audio/wav;base64,' + btoa(bin);
