@@ -1,0 +1,20 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  /* Remove tap flash on mobile */
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Fills the item left→right over exactly the beat duration */
+@keyframes chordSweep {
+  from { transform: scaleX(0); }
+  to   { transform: scaleX(1); }
+}
+
+/* Fades out after sweep completes */
+@keyframes chordFade {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
