@@ -2173,7 +2173,7 @@ export default function CreatePage() {
         <div className="h-2" />
       </main>
 
-      <footer className="relative shrink-0 border-t border-stone-200 bg-white px-4 pt-3 pb-5">
+      <footer className="relative shrink-0 border-t border-stone-200 bg-white px-4 pt-2 pb-5">
         {/* Copied-to-clipboard toast — floats above the chord picker, no layout shift */}
         {copiedToast && (
           <div className="absolute bottom-full left-4 right-4 mb-3 z-50 rounded-2xl bg-emerald-600/80 px-5 py-3 text-center text-sm font-semibold text-white pointer-events-none">
@@ -2181,11 +2181,11 @@ export default function CreatePage() {
           </div>
         )}
 
-        {/* Category pills */}
-        <div className="mb-2 flex gap-1.5 flex-wrap">
+        {/* Category pills — single scrollable row so they never wrap */}
+        <div className="-mx-4 px-4 mb-1.5 flex gap-1.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {visibleCategories.map(({ label }) => (
             <button key={label} onClick={() => setActiveCategory(label)}
-              className={`rounded-full px-3 py-1 text-xs font-semibold transition-colors ${
+              className={`shrink-0 rounded-full px-3 py-1 text-xs font-semibold transition-colors ${
                 activeCategory === label ? 'bg-indigo-600 text-white' : 'bg-stone-100 text-stone-600 hover:bg-stone-200'
               }`}>
               {label}
@@ -2194,24 +2194,24 @@ export default function CreatePage() {
         </div>
 
         {/* Chord grid */}
-        <div className="mb-3 flex flex-wrap gap-1.5">
+        <div className="mb-2 flex flex-wrap gap-1">
           {(visibleCategories.find(c => c.label === activeCategory)?.chords ?? []).map(chord => (
             <button key={chord} onClick={() => addChord(chord)}
-              className="rounded-lg bg-stone-100 px-3 py-2 text-sm font-semibold text-stone-700 hover:bg-indigo-100 hover:text-indigo-700 active:scale-95 transition-transform">
+              className="rounded-lg bg-stone-100 px-2.5 py-1.5 text-sm font-semibold text-stone-700 hover:bg-indigo-100 hover:text-indigo-700 active:scale-95 transition-transform">
               {chord}
             </button>
           ))}
         </div>
 
         {/* Action buttons — all always visible; disabled until chords exist */}
-        <div className="flex gap-2">
+        <div className="flex gap-1.5">
           {/* Settings */}
           <button
             onClick={() => setSettingsOpen(s => !s)}
             disabled={chords.length === 0}
             aria-label="Settings"
             title="Settings"
-            className={`flex items-center justify-center rounded-xl px-3.5 py-3.5 transition-colors border ${
+            className={`flex items-center justify-center rounded-xl px-3 py-3 transition-colors border ${
               chords.length === 0
                 ? 'border-stone-200 bg-white text-stone-200 cursor-not-allowed'
                 : settingsOpen
@@ -2228,7 +2228,7 @@ export default function CreatePage() {
             disabled={chords.length === 0}
             aria-label={looping ? 'Disable loop' : 'Enable loop'}
             title={looping ? 'Loop on' : 'Loop off'}
-            className={`flex items-center justify-center rounded-xl px-3.5 py-3.5 transition-colors border ${
+            className={`flex items-center justify-center rounded-xl px-3 py-3 transition-colors border ${
               chords.length === 0
                 ? 'border-stone-200 bg-white text-stone-200 cursor-not-allowed'
                 : looping
@@ -2243,27 +2243,27 @@ export default function CreatePage() {
           <button
             onClick={playing ? stopPlayback : startPlayback}
             disabled={chords.length === 0}
-            className={`flex-1 flex items-center justify-center gap-2 rounded-xl py-3.5 text-base font-semibold transition-colors ${
+            className={`flex-1 flex items-center justify-center gap-2 rounded-xl py-3 text-sm font-semibold transition-colors ${
               chords.length === 0
                 ? 'bg-indigo-200 text-white cursor-not-allowed'
                 : playing
                 ? 'bg-stone-100 text-stone-700 hover:bg-stone-200'
                 : 'bg-indigo-600 text-white hover:bg-indigo-700'
             }`}>
-            {playing ? <><StopIcon size={14} /> Stop</> : <><PlayIcon size={14} /> Preview</>}
+            {playing ? <><StopIcon size={13} /> Stop</> : <><PlayIcon size={13} /> Preview</>}
           </button>
 
           {/* Save */}
           <button
             onClick={saveToLibrary}
             disabled={chords.length === 0 || saveStatus === 'saving'}
-            className={`flex items-center justify-center rounded-xl border px-3.5 py-3.5 transition-colors ${
+            className={`flex items-center justify-center rounded-xl border px-3 py-3 transition-colors ${
               chords.length === 0
                 ? 'border-stone-200 bg-white text-stone-200 cursor-not-allowed'
                 : 'border-stone-300 bg-white text-stone-500 hover:bg-stone-50 disabled:opacity-50'
             }`}>
             {saveStatus === 'saved'
-              ? <span className="text-emerald-600 font-bold text-sm">✓</span>
+              ? <span className="text-emerald-600 font-bold text-xs">✓</span>
               : saveStatus === 'saving'
               ? <SpinnerIcon size={13} />
               : <SaveIcon size={14} />}
@@ -2275,7 +2275,7 @@ export default function CreatePage() {
             disabled={chords.length === 0}
             aria-label="Share"
             title="Share"
-            className={`flex items-center justify-center rounded-xl border px-3.5 py-3.5 transition-colors ${
+            className={`flex items-center justify-center rounded-xl border px-3 py-3 transition-colors ${
               chords.length === 0
                 ? 'border-stone-200 bg-white text-stone-200 cursor-not-allowed'
                 : 'border-stone-300 bg-white text-stone-500 hover:bg-stone-50 hover:text-stone-700'
