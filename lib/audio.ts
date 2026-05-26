@@ -228,27 +228,24 @@ function pluckOrgan(ctx: AudioContext, dest: AudioNode, hz: number, when: number
   });
 }
 
-/** Play a chord using synthesis — immediate, no loading. */
-function playSynthChord(name: string, sound: SoundType, durationSecs: number): void {
-  try {
-    const ctx  = getAC();
-    const dest = compressor!;
-    const now  = ctx.currentTime;
-    const notes = CHORD_MIDI[name] ?? generateVoicing(name) ?? [];
-    const strum = SF_STRUM[sound] ? 0.035 : 0;
+/** Play a chord using synthesis on an already-running AudioContext. */
+function playSynthChordNow(name: string, sound: SoundType, durationSecs: number, ctx: AudioContext): void {
+  const dest  = compressor!;
+  const now   = ctx.currentTime;
+  const notes = CHORD_MIDI[name] ?? generateVoicing(name) ?? [];
+  const strum = SF_STRUM[sound] ? 0.035 : 0;
 
-    notes.forEach((midi, i) => {
-      const hz   = midiToHz(midi);
-      const when = now + i * strum;
-      switch (sound) {
-        case 'acoustic-guitar': pluck(ctx, dest, hz, when, durationSecs); break;
-        case 'electric-guitar': pluckElectric(ctx, dest, hz, when, durationSecs); break;
-        case 'piano':           pluckPiano(ctx, dest, hz, when, durationSecs); break;
-        case 'synth':           pluckSynth(ctx, dest, hz, when, durationSecs); break;
-        case 'organ':           pluckOrgan(ctx, dest, hz, when, durationSecs); break;
-      }
-    });
-  } catch { /* ignore */ }
+  notes.forEach((midi, i) => {
+    const hz   = midiToHz(midi);
+    const when = now + i * strum;
+    switch (sound) {
+      case 'acoustic-guitar': pluck(ctx, dest, hz, when, durationSecs); break;
+      case 'electric-guitar': pluckElectric(ctx, dest, hz, when, durationSecs); break;
+      case 'piano':           pluckPiano(ctx, dest, hz, when, durationSecs); break;
+      case 'synth':           pluckSynth(ctx, dest, hz, when, durationSecs); break;
+      case 'organ':           pluckOrgan(ctx, dest, hz, when, durationSecs); break;
+    }
+  });
 }
 
 // ── Soundfont instrument cache (enhanced samples, loaded in background) ───────
@@ -330,29 +327,44 @@ export function playClick(isAccent: boolean): void {
  * Play a chord with the selected voice.
  *
  * Strategy:
- *  1. Play synthesis *immediately* — zero loading time, works in all browsers.
- *  2. If soundfont samples are already cached, also trigger them (they'll
- *     overlay and sound better). On the first tap samples aren't cached yet,
- *     so only synthesis plays. Once loaded they're used for all future taps.
- *  3. Kick off background loading of samples so future taps upgrade automatically.
+ *  1. Create/unlock the AudioContext synchronously within the user gesture.
+ *  2. If the context is already running: schedule audio immediately.
+ *     If it's suspended (iOS always starts suspended): await resume(), then schedule.
+ *     Audio scheduling does NOT need to be in a gesture — only context creation does.
+ *  3. Use synthesis for instant sound (no loading). If soundfont samples are
+ *     already cached, use those instead (better quality). Load samples in the
+ *     background so future taps upgrade automatically.
  */
 export function playChordWithSound(name: string, sound: SoundType, durationSecs = 3): void {
   if (typeof window === 'undefined') return;
 
+  // Always call getAC() synchronously within the gesture — this creates/unlocks
+  // the AudioContext on iOS even if we later await resume().
+  const ctx    = getAC();
   const sfName = SF_NAMES[sound];
 
-  if (sfCache.has(sfName)) {
-    // Samples already loaded — use them (they sound much better)
-    playSampleChord(name, sfName, durationSecs, !!SF_STRUM[sound]).catch(() => {
-      // Samples failed mid-session — fall back to synthesis
-      playSynthChord(name, sound, durationSecs);
-    });
+  const schedule = () => {
+    if (sfCache.has(sfName)) {
+      // Samples cached — use them (sound much better than synthesis)
+      playSampleChord(name, sfName, durationSecs, !!SF_STRUM[sound]).catch(() => {
+        // Samples failed mid-session — fall back to synthesis
+        playSynthChordNow(name, sound, durationSecs, ctx);
+      });
+    } else {
+      // No samples yet — synthesize immediately for instant feedback
+      playSynthChordNow(name, sound, durationSecs, ctx);
+      // Kick off background load so future taps upgrade to samples
+      loadInstrument(ctx, sfName).catch(() => { /* CDN blocked — synthesis continues */ });
+    }
+  };
+
+  if (ctx.state === 'running') {
+    // Context already running (subsequent taps, or desktop)
+    schedule();
   } else {
-    // Samples not yet loaded — play synthesis right now for instant feedback
-    playSynthChord(name, sound, durationSecs);
-    // Also kick off background loading so next taps can upgrade to samples
-    const ctx = ac ?? getAC();
-    loadInstrument(ctx, sfName).catch(() => { /* CDN blocked or unavailable — synthesis continues */ });
+    // Context suspended — await resume, then schedule
+    // Safe: context was unlocked by getAC() above; scheduling after await is fine
+    ctx.resume().then(schedule).catch(() => {});
   }
 }
 
