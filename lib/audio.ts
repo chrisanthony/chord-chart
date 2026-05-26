@@ -126,7 +126,9 @@ function getAC(): AudioContext {
     compressor.release.value = 0.3;
     compressor.connect(ac.destination);
   }
-  // Do NOT call resume() here — playChordWithSound awaits it properly per-tap.
+  // Resume if suspended (e.g. after page backgrounding). Fine to call outside
+  // a gesture here because the actual unlock happens inside playChordWithSound.
+  if (ac.state === 'suspended') ac.resume().catch(() => {});
   return ac;
 }
 
@@ -228,10 +230,17 @@ function pluckOrgan(ctx: AudioContext, dest: AudioNode, hz: number, when: number
   });
 }
 
-/** Play a chord using synthesis on an already-running AudioContext. */
-function playSynthChordNow(name: string, sound: SoundType, durationSecs: number, ctx: AudioContext): void {
+/** Play a chord using synthesis. `startDelay` offsets scheduling into the future
+ *  (used on first tap to give ctx.resume() time to complete). */
+function playSynthChordNow(
+  name: string,
+  sound: SoundType,
+  durationSecs: number,
+  ctx: AudioContext,
+  startDelay = 0,
+): void {
   const dest  = compressor!;
-  const now   = ctx.currentTime;
+  const now   = ctx.currentTime + startDelay;
   const notes = CHORD_MIDI[name] ?? generateVoicing(name) ?? [];
   const strum = SF_STRUM[sound] ? 0.035 : 0;
 
@@ -283,20 +292,19 @@ function loadInstrument(ctx: AudioContext, name: string): Promise<SfPlayer> {
   return sfLoading.get(name)!;
 }
 
-/**
- * RC5: Schedule soundfont notes synchronously using a pre-resolved ctx + player.
- * Called only after both are ready, so there are no awaits inside.
- */
+/** Schedule soundfont notes. `startDelay` offsets scheduling into the future
+ *  (used on first tap to give ctx.resume() time to complete). */
 function playSampleChord(
   ctx: AudioContext,
   player: SfPlayer,
   name: string,
   durationSecs: number,
   strum: boolean,
+  startDelay = 0,
 ): void {
   const notes     = CHORD_MIDI[name] ?? generateVoicing(name) ?? [];
   const strumStep = strum ? 0.035 : 0;
-  const playAt    = ctx.currentTime;
+  const playAt    = ctx.currentTime + startDelay;
 
   notes.forEach((midi, i) => {
     player.play(midiToNoteName(midi), playAt + i * strumStep, {
@@ -343,10 +351,12 @@ export function prewarmAudio(sound: SoundType = 'acoustic-guitar'): void {
 /**
  * Play a chord with the selected voice.
  *
- * iOS unlock strategy: `ctx.resume()` is called synchronously at the top of this
- * async function and then awaited. iOS WebKit passes the user-activation token
- * through this specific Promise, so the context is guaranteed running before any
- * audio is scheduled — even on first tap from a previously suspended context.
+ * iOS unlock strategy: `ctx.resume()` is called synchronously (fire-and-forget,
+ * no await) within the gesture handler's call stack. iOS only honours the
+ * user-activation token in the *synchronous* portion of the event handler —
+ * any await before resume() loses the token. We compensate by scheduling notes
+ * 100ms into the future on the first tap, giving resume() time to resolve before
+ * audio is rendered.
  *
  * Playback strategy:
  *  • Samples cached  → play samples immediately (best quality, no latency).
@@ -355,34 +365,32 @@ export function prewarmAudio(sound: SoundType = 'acoustic-guitar'): void {
  *
  * DuckDuckGo (CDN blocked): synthesis plays on every tap — no silence, no 8s wait.
  */
-export async function playChordWithSound(
+export function playChordWithSound(
   name: string,
   sound: SoundType,
   durationSecs = 3,
-): Promise<void> {
+): void {
   if (typeof window === 'undefined') return;
 
   const ctx = getAC();
+  const wasRunning = ctx.state === 'running';
 
-  // Reliably unlock iOS AudioContext.
-  // ctx.resume() must be called synchronously (before any other await).
-  // iOS passes the user-activation token through this Promise specifically.
-  // Once it resolves, ctx.state === 'running' and ctx.currentTime > 0.
-  if (ctx.state !== 'running') {
-    try { await ctx.resume(); } catch { /* ignore — audio stays silent */ }
-  }
+  // Call resume() synchronously within the gesture — iOS honours this.
+  // No await: async/await breaks the iOS user-activation token.
+  if (!wasRunning) ctx.resume().catch(() => {});
 
-  const sfName      = SF_NAMES[sound];
-  const isGuitar    = !!SF_STRUM[sound];
-  const cachedPlayer = sfCache.get(sfName);
+  // On first tap, give resume() ~100ms to complete before notes play.
+  // On all subsequent taps, the context is already running — no delay needed.
+  const startDelay = wasRunning ? 0 : 0.1;
 
-  if (cachedPlayer) {
-    // Samples ready → play at the correct current time (no strum-collapse risk).
-    playSampleChord(ctx, cachedPlayer, name, durationSecs, isGuitar);
+  const sfName   = SF_NAMES[sound];
+  const isGuitar = !!SF_STRUM[sound];
+  const cached   = sfCache.get(sfName);
+
+  if (cached) {
+    playSampleChord(ctx, cached, name, durationSecs, isGuitar, startDelay);
   } else {
-    // Samples not ready → synthesis is the instant fallback.
-    playSynthChordNow(name, sound, durationSecs, ctx);
-    // Kick off CDN load in the background (no await — don't block this tap).
+    playSynthChordNow(name, sound, durationSecs, ctx, startDelay);
     if (!sfLoading.has(sfName)) {
       loadInstrument(ctx, sfName).catch(() => {}); // silent failure on DuckDuckGo
     }

@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from 'next';
 import './globals.css';
+import UnmuteAudio from './UnmuteAudio';
 
 export const metadata: Metadata = {
   title: 'Chord Chart',
@@ -15,7 +16,10 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body className="bg-stone-50 text-stone-900" suppressHydrationWarning>{children}</body>
+      <body className="bg-stone-50 text-stone-900" suppressHydrationWarning>
+        <UnmuteAudio />
+        {children}
+      </body>
     </html>
   );
 }
