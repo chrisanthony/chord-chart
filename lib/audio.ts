@@ -1,4 +1,3 @@
-import { instrument as sfInstrument } from 'soundfont-player';
 import type { Player as SfPlayer } from 'soundfont-player';
 
 // ── Sound type ────────────────────────────────────────────────────────────────
@@ -141,10 +140,12 @@ let currentSfPlayer: SfPlayer | null = null;
 function loadInstrument(ctx: AudioContext, name: string): Promise<SfPlayer> {
   if (sfCache.has(name)) return Promise.resolve(sfCache.get(name)!);
   if (!sfLoading.has(name)) {
-    const p = sfInstrument(ctx, name as Parameters<typeof sfInstrument>[1], {
-      soundfont: 'MusyngKite',
-      format: 'mp3',
-    }).then(player => { sfCache.set(name, player); return player; });
+    const p = import('soundfont-player').then(sf =>
+      sf.instrument(ctx, name as Parameters<typeof sf.instrument>[1], {
+        soundfont: 'MusyngKite',
+        format: 'mp3',
+      })
+    ).then(player => { sfCache.set(name, player); return player; });
     sfLoading.set(name, p);
   }
   return sfLoading.get(name)!;
@@ -162,6 +163,8 @@ async function playSampleChord(
   if (currentSfPlayer) currentSfPlayer.stop();
 
   const player = await loadInstrument(ctx, sfName);
+  // Re-resume in case iOS Safari suspended the context during the async load
+  if (ctx.state === 'suspended') ctx.resume();
   currentSfPlayer = player;
 
   const notes     = CHORD_MIDI[name] ?? generateVoicing(name) ?? [];
