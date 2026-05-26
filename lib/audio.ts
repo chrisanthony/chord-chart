@@ -413,25 +413,19 @@ export function playChordWithSound(
     if (cached) {
       // Samples ready — play immediately.
       playSampleChord(ctx, cached, name, durationSecs, isGuitar, startDelay);
-    } else if (sfLoading.has(sfName)) {
-      // Samples are in-flight (started loading during prewarm). Wait for them.
-      // The mySeq guard ensures only the LATEST pending tap fires when the load
-      // resolves — prevents deafening double-play when the user taps twice before
-      // the soundfont finishes loading (both .then() callbacks would fire otherwise).
-      sfLoading.get(sfName)!
+    } else {
+      // Samples not yet loaded. Start loading if not already in progress, then
+      // wait silently — no synthesis fallback. The mySeq guard ensures only the
+      // latest tap fires when the load resolves.
+      const loadPromise = sfLoading.has(sfName)
+        ? sfLoading.get(sfName)!
+        : loadInstrument(ctx, sfName);
+      loadPromise
         .then(player => {
-          if (mySeq !== playSeq) return; // a newer tap supersedes this one
+          if (mySeq !== playSeq) return;
           playSampleChord(ctx, player, name, durationSecs, isGuitar, 0.05);
         })
-        .catch(() => {
-          if (mySeq !== playSeq) return;
-          playSynthChordNow(name, sound, durationSecs, ctx, 0.05);
-        });
-    } else {
-      // CDN unreachable (e.g. DuckDuckGo blocks gleitz.github.io) — use synthesis
-      // as the fallback and retry the load in the background for next time.
-      playSynthChordNow(name, sound, durationSecs, ctx, startDelay);
-      loadInstrument(ctx, sfName).catch(() => {});
+        .catch(() => {}); // CDN blocked — stay silent rather than play synthesis
     }
   }
 
