@@ -248,11 +248,16 @@ function playSynthChordNow(name: string, sound: SoundType, durationSecs: number,
   });
 }
 
-// ── Soundfont instrument cache (enhanced samples, loaded in background) ───────
+// ── Soundfont instrument cache ────────────────────────────────────────────────
 
 const sfCache   = new Map<string, SfPlayer>();
 const sfLoading = new Map<string, Promise<SfPlayer>>();
 let currentSfPlayer: SfPlayer | null = null;
+
+// Cancel token for the most recent pending play request.
+// When the user taps a new chord while samples are still loading,
+// the previous pending play is cancelled so only the latest chord plays.
+let pendingCancel: (() => void) | null = null;
 
 function loadInstrument(ctx: AudioContext, name: string): Promise<SfPlayer> {
   if (sfCache.has(name)) return Promise.resolve(sfCache.get(name)!);
@@ -324,48 +329,67 @@ export function playClick(isAccent: boolean): void {
 }
 
 /**
+ * Begin loading soundfont samples for the given voice.
+ * Call this on the first user interaction with the page (touchstart / mousedown)
+ * so samples are ready (or well underway) by the time a chord is tapped.
+ * Returns a promise that resolves to true if samples loaded, false if CDN blocked.
+ */
+export function prewarmAudio(sound: SoundType = 'acoustic-guitar'): Promise<boolean> {
+  if (typeof window === 'undefined') return Promise.resolve(false);
+  const ctx = getAC();
+  if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+  return loadInstrument(ctx, SF_NAMES[sound])
+    .then(() => true)
+    .catch(() => false);
+}
+
+/**
  * Play a chord with the selected voice.
  *
  * Strategy:
  *  1. Create/unlock the AudioContext synchronously within the user gesture.
- *  2. If the context is already running: schedule audio immediately.
- *     If it's suspended (iOS always starts suspended): await resume(), then schedule.
- *     Audio scheduling does NOT need to be in a gesture — only context creation does.
- *  3. Use synthesis for instant sound (no loading). If soundfont samples are
- *     already cached, use those instead (better quality). Load samples in the
- *     background so future taps upgrade automatically.
+ *  2. Await ctx.resume() if needed (iOS always starts suspended).
+ *  3. If samples are cached → play them immediately (best quality).
+ *     If still loading → wait silently, then play samples once ready.
+ *     No synthesis blast on top of the loading samples.
+ *  4. Only fall back to quiet synthesis if the CDN fails entirely.
  */
 export function playChordWithSound(name: string, sound: SoundType, durationSecs = 3): void {
   if (typeof window === 'undefined') return;
 
-  // Always call getAC() synchronously within the gesture — this creates/unlocks
-  // the AudioContext on iOS even if we later await resume().
+  // Cancel any previous play that's still waiting for samples to load.
+  if (pendingCancel) { pendingCancel(); pendingCancel = null; }
+
+  // Always call getAC() synchronously in the gesture — creates/unlocks AudioContext on iOS.
   const ctx    = getAC();
   const sfName = SF_NAMES[sound];
 
-  const schedule = () => {
-    if (sfCache.has(sfName)) {
-      // Samples cached — use them (sound much better than synthesis)
-      playSampleChord(name, sfName, durationSecs, !!SF_STRUM[sound]).catch(() => {
-        // Samples failed mid-session — fall back to synthesis
+  let cancelled = false;
+  pendingCancel = () => { cancelled = true; };
+
+  const play = async () => {
+    // Ensure context is running before scheduling audio
+    if (ctx.state !== 'running') {
+      try { await ctx.resume(); } catch { return; }
+    }
+    if (cancelled) return;
+
+    try {
+      // Wait for samples (instant if already cached; otherwise silent while loading)
+      await loadInstrument(ctx, sfName);
+      if (cancelled) return;
+      pendingCancel = null;
+      await playSampleChord(name, sfName, durationSecs, !!SF_STRUM[sound]);
+    } catch {
+      // CDN completely blocked — fall back to quiet synthesis as last resort
+      if (!cancelled) {
+        pendingCancel = null;
         playSynthChordNow(name, sound, durationSecs, ctx);
-      });
-    } else {
-      // No samples yet — synthesize immediately for instant feedback
-      playSynthChordNow(name, sound, durationSecs, ctx);
-      // Kick off background load so future taps upgrade to samples
-      loadInstrument(ctx, sfName).catch(() => { /* CDN blocked — synthesis continues */ });
+      }
     }
   };
 
-  if (ctx.state === 'running') {
-    // Context already running (subsequent taps, or desktop)
-    schedule();
-  } else {
-    // Context suspended — await resume, then schedule
-    // Safe: context was unlocked by getAC() above; scheduling after await is fine
-    ctx.resume().then(schedule).catch(() => {});
-  }
+  play().catch(() => {});
 }
 
 /** Backward-compat wrapper — plays as acoustic guitar. */

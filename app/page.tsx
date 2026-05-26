@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
-import { playChord, playChordWithSound, playClick, type SoundType } from '@/lib/audio';
+import { playChord, playChordWithSound, playClick, prewarmAudio, type SoundType } from '@/lib/audio';
 import { detectKey, getDiatonicChords, randomProgression } from '@/lib/music';
 import { getChordNotes, getQualityLabel, getGuitarShape } from '@/lib/guitar';
 import {
@@ -1536,6 +1536,7 @@ export default function CreatePage() {
   const [saveStatus, setSaveStatus]   = useState<'idle' | 'saving' | 'saved'>('idle');
   const [copiedToast, setCopiedToast] = useState(false);
   const [isRolled,   setIsRolled]     = useState(false); // true when chords came from dice roll
+  const [audioReady,  setAudioReady]  = useState(false); // true once soundfont samples are loaded
 
   // ── Key mode ──
   // 'auto'  : key floats with chord detection; user can lock it in
@@ -1607,6 +1608,22 @@ export default function CreatePage() {
     clearTimeout(metronomeTimerRef.current!);
     clearTimeout(sweepTimerRef.current!);
     clearTimeout(fadeTimerRef.current!);
+  }, []);
+
+  // Preload soundfont samples on the first user interaction with the page.
+  // This gives the samples a head-start so they're ready (or close to it)
+  // by the time the user taps a chord.
+  useEffect(() => {
+    const prime = () => {
+      prewarmAudio('acoustic-guitar').then(() => setAudioReady(true));
+    };
+    document.addEventListener('touchstart', prime, { once: true, passive: true });
+    document.addEventListener('mousedown',  prime, { once: true });
+    return () => {
+      document.removeEventListener('touchstart', prime);
+      document.removeEventListener('mousedown',  prime);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Sound helper — routes to the selected voice
@@ -2178,6 +2195,14 @@ export default function CreatePage() {
         {copiedToast && (
           <div className="absolute bottom-full left-4 right-4 mb-3 z-50 rounded-2xl bg-emerald-600/80 px-5 py-3 text-center text-sm font-semibold text-white pointer-events-none">
             Link copied to clipboard
+          </div>
+        )}
+
+        {/* Audio loading indicator — shown until soundfont samples are ready */}
+        {!audioReady && (
+          <div className="mb-1.5 flex items-center gap-1 text-[10px] text-stone-300">
+            <SpinnerIcon size={9} />
+            <span>Loading audio…</span>
           </div>
         )}
 
