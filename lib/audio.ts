@@ -140,12 +140,16 @@ let currentSfPlayer: SfPlayer | null = null;
 function loadInstrument(ctx: AudioContext, name: string): Promise<SfPlayer> {
   if (sfCache.has(name)) return Promise.resolve(sfCache.get(name)!);
   if (!sfLoading.has(name)) {
-    const p = import('soundfont-player').then(sf =>
-      sf.instrument(ctx, name as Parameters<typeof sf.instrument>[1], {
+    const p = import('soundfont-player').then(sf => {
+      // In production Next.js, CJS modules imported dynamically may wrap the
+      // module as `{ default: module }` rather than spreading named exports.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const mod = (sf as any).instrument ? sf : ((sf as any).default ?? sf);
+      return mod.instrument(ctx, name, {
         soundfont: 'MusyngKite',
         format: 'mp3',
-      })
-    ).then(player => { sfCache.set(name, player); return player; });
+      }) as Promise<SfPlayer>;
+    }).then(player => { sfCache.set(name, player); return player; });
     sfLoading.set(name, p);
   }
   return sfLoading.get(name)!;
@@ -159,12 +163,24 @@ async function playSampleChord(
 ): Promise<void> {
   const ctx = getAC();
 
+  // iOS Safari AudioContext unlock: play a 1-frame silent buffer *synchronously*
+  // (before any await) so the context stays active through the async load below.
+  try {
+    const buf = ctx.createBuffer(1, 1, ctx.sampleRate);
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(ctx.destination);
+    src.start(0);
+  } catch { /* ignore — best-effort unlock */ }
+
   // Stop any currently playing soundfont notes
   if (currentSfPlayer) currentSfPlayer.stop();
 
   const player = await loadInstrument(ctx, sfName);
-  // Re-resume in case iOS Safari suspended the context during the async load
-  if (ctx.state === 'suspended') ctx.resume();
+
+  // Belt-and-suspenders: re-resume if iOS re-suspended during the async gap
+  if (ctx.state === 'suspended') { try { await ctx.resume(); } catch { /* ignore */ } }
+
   currentSfPlayer = player;
 
   const notes     = CHORD_MIDI[name] ?? generateVoicing(name) ?? [];
