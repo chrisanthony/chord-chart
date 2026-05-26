@@ -118,6 +118,17 @@ let compressor: DynamicsCompressorNode | null = null;
 function getAC(): AudioContext {
   if (!ac) {
     ac = new AudioContext();
+
+    // iOS 16.4+: Route Web Audio to the media channel (controlled by side-button
+    // volume during playback, never silenced by the mute switch). Without this,
+    // Web Audio uses the ambient/ringer channel which can be silenced by various
+    // system conditions even when ringer volume is at maximum.
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const nav = navigator as any;
+      if (nav.audioSession) nav.audioSession.type = 'playback';
+    } catch { /* not supported — silent-audio fallback handles older iOS */ }
+
     compressor = ac.createDynamicsCompressor();
     compressor.threshold.value = -18;
     compressor.knee.value = 10;
@@ -127,7 +138,7 @@ function getAC(): AudioContext {
     compressor.connect(ac.destination);
   }
   // Resume if suspended (e.g. after page backgrounding). Fine to call outside
-  // a gesture here because the actual unlock happens inside playChordWithSound.
+  // a gesture here because the definitive unlock happens inside playChordWithSound.
   if (ac.state === 'suspended') ac.resume().catch(() => {});
   return ac;
 }
@@ -351,15 +362,18 @@ export function prewarmAudio(sound: SoundType = 'acoustic-guitar'): void {
 /**
  * Play a chord with the selected voice.
  *
- * iOS unlock strategy: `ctx.resume()` is called synchronously (fire-and-forget,
- * no await) within the gesture handler's call stack. iOS only honours the
- * user-activation token in the *synchronous* portion of the event handler —
- * any await before resume() loses the token. We compensate by scheduling notes
- * 100ms into the future on the first tap, giving resume() time to resolve before
- * audio is rendered.
+ * iOS unlock strategy:
+ *  • When the context is suspended, play a silent 1-frame AudioBufferSourceNode
+ *    directly via ctx.destination. This is the most reliable cross-version iOS
+ *    unlock — resume() alone is not always sufficient (iOS may invoke dnd-kit's
+ *    tap handler programmatically after its 200ms delay, outside a native gesture
+ *    context, causing resume() to be ignored).
+ *  • ctx.resume() is called synchronously within the gesture — iOS honours this.
+ *    Notes are then scheduled in .then() after the context is confirmed running,
+ *    so currentTime is already advancing and startTime is never in the past.
  *
  * Playback strategy:
- *  • Samples cached  → play samples immediately (best quality, no latency).
+ *  • Samples cached  → play samples (best quality, no latency).
  *  • Samples missing → play synthesis immediately (instant, no CDN wait),
  *                      and start CDN load in background so the next tap uses samples.
  *
@@ -372,28 +386,42 @@ export function playChordWithSound(
 ): void {
   if (typeof window === 'undefined') return;
 
-  const ctx = getAC();
-  const wasRunning = ctx.state === 'running';
-
-  // Call resume() synchronously within the gesture — iOS honours this.
-  // No await: async/await breaks the iOS user-activation token.
-  if (!wasRunning) ctx.resume().catch(() => {});
-
-  // On first tap, give resume() ~100ms to complete before notes play.
-  // On all subsequent taps, the context is already running — no delay needed.
-  const startDelay = wasRunning ? 0 : 0.1;
-
+  const ctx      = getAC();
   const sfName   = SF_NAMES[sound];
   const isGuitar = !!SF_STRUM[sound];
-  const cached   = sfCache.get(sfName);
 
-  if (cached) {
-    playSampleChord(ctx, cached, name, durationSecs, isGuitar, startDelay);
-  } else {
-    playSynthChordNow(name, sound, durationSecs, ctx, startDelay);
-    if (!sfLoading.has(sfName)) {
-      loadInstrument(ctx, sfName).catch(() => {}); // silent failure on DuckDuckGo
+  function schedule() {
+    // Context is guaranteed running here. Schedule 50ms ahead so automation
+    // events (setValueAtTime etc.) are never in the past.
+    const startDelay = 0.05;
+    const cached = sfCache.get(sfName);
+    if (cached) {
+      playSampleChord(ctx, cached, name, durationSecs, isGuitar, startDelay);
+    } else {
+      playSynthChordNow(name, sound, durationSecs, ctx, startDelay);
+      if (!sfLoading.has(sfName)) {
+        loadInstrument(ctx, sfName).catch(() => {}); // silent failure on DuckDuckGo
+      }
     }
+  }
+
+  if (ctx.state === 'running') {
+    schedule(); // already running — schedule immediately
+  } else {
+    // iOS unlock: play a real (silent) AudioBufferSourceNode directly through
+    // ctx.destination. This activates the iOS audio engine for this context on
+    // ALL iOS versions — resume() alone is not always sufficient.
+    try {
+      const silentBuf = ctx.createBuffer(1, 1, ctx.sampleRate);
+      const silentSrc = ctx.createBufferSource();
+      silentSrc.buffer = silentBuf;
+      silentSrc.connect(ctx.destination);
+      silentSrc.start(0);
+    } catch { /* ignore */ }
+
+    // Call resume() synchronously within the gesture (iOS requires this).
+    // Schedule notes in .then() — no gesture needed for node creation/scheduling.
+    ctx.resume().then(schedule).catch(() => {});
   }
 }
 
