@@ -273,6 +273,12 @@ function playSynthChordNow(
 const sfCache   = new Map<string, SfPlayer>();
 const sfLoading = new Map<string, Promise<SfPlayer>>();
 
+// Monotonic counter used to discard stale pending-play callbacks.
+// Each call to playChordWithSound captures the current value; a callback only
+// fires if no newer tap has arrived since (prevents double-play when the user
+// taps twice before the soundfont finishes loading).
+let playSeq = 0;
+
 function loadInstrument(ctx: AudioContext, name: string): Promise<SfPlayer> {
   if (sfCache.has(name)) return Promise.resolve(sfCache.get(name)!);
   if (!sfLoading.has(name)) {
@@ -288,6 +294,10 @@ function loadInstrument(ctx: AudioContext, name: string): Promise<SfPlayer> {
       return mod.instrument(ctx, name, {
         soundfont: 'MusyngKite',
         format: 'mp3',
+        // Route samples through our master compressor so they are limited the
+        // same way synthesis is. Without this, samples connect directly to
+        // ac.destination and bypass compression entirely — painfully loud.
+        destination: compressor,
       }) as Promise<SfPlayer>;
     }).then(player => {
       sfCache.set(name, player);
@@ -390,6 +400,10 @@ export function playChordWithSound(
   const sfName   = SF_NAMES[sound];
   const isGuitar = !!SF_STRUM[sound];
 
+  // Stamp this tap. Any older pending-load callbacks will see their seq no
+  // is stale and bail out, preventing double-play on rapid taps.
+  const mySeq = ++playSeq;
+
   function schedule() {
     // Context is guaranteed running here. Schedule 50ms ahead so automation
     // events (setValueAtTime etc.) are never in the past.
@@ -400,12 +414,19 @@ export function playChordWithSound(
       // Samples ready — play immediately.
       playSampleChord(ctx, cached, name, durationSecs, isGuitar, startDelay);
     } else if (sfLoading.has(sfName)) {
-      // Samples are in-flight (started loading during prewarm). Wait for them
-      // rather than layering synthesis on top — that causes a double-play when
-      // both finish within milliseconds of each other.
+      // Samples are in-flight (started loading during prewarm). Wait for them.
+      // The mySeq guard ensures only the LATEST pending tap fires when the load
+      // resolves — prevents deafening double-play when the user taps twice before
+      // the soundfont finishes loading (both .then() callbacks would fire otherwise).
       sfLoading.get(sfName)!
-        .then(player => playSampleChord(ctx, player, name, durationSecs, isGuitar, 0.05))
-        .catch(() => playSynthChordNow(name, sound, durationSecs, ctx, 0.05));
+        .then(player => {
+          if (mySeq !== playSeq) return; // a newer tap supersedes this one
+          playSampleChord(ctx, player, name, durationSecs, isGuitar, 0.05);
+        })
+        .catch(() => {
+          if (mySeq !== playSeq) return;
+          playSynthChordNow(name, sound, durationSecs, ctx, 0.05);
+        });
     } else {
       // CDN unreachable (e.g. DuckDuckGo blocks gleitz.github.io) — use synthesis
       // as the fallback and retry the load in the background for next time.
