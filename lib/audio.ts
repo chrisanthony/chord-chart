@@ -395,13 +395,22 @@ export function playChordWithSound(
     // events (setValueAtTime etc.) are never in the past.
     const startDelay = 0.05;
     const cached = sfCache.get(sfName);
+
     if (cached) {
+      // Samples ready — play immediately.
       playSampleChord(ctx, cached, name, durationSecs, isGuitar, startDelay);
+    } else if (sfLoading.has(sfName)) {
+      // Samples are in-flight (started loading during prewarm). Wait for them
+      // rather than layering synthesis on top — that causes a double-play when
+      // both finish within milliseconds of each other.
+      sfLoading.get(sfName)!
+        .then(player => playSampleChord(ctx, player, name, durationSecs, isGuitar, 0.05))
+        .catch(() => playSynthChordNow(name, sound, durationSecs, ctx, 0.05));
     } else {
+      // CDN unreachable (e.g. DuckDuckGo blocks gleitz.github.io) — use synthesis
+      // as the fallback and retry the load in the background for next time.
       playSynthChordNow(name, sound, durationSecs, ctx, startDelay);
-      if (!sfLoading.has(sfName)) {
-        loadInstrument(ctx, sfName).catch(() => {}); // silent failure on DuckDuckGo
-      }
+      loadInstrument(ctx, sfName).catch(() => {});
     }
   }
 
