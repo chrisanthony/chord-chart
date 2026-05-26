@@ -126,8 +126,25 @@ function getAC(): AudioContext {
     compressor.release.value = 0.3;
     compressor.connect(ac.destination);
   }
-  if (ac.state === 'suspended') ac.resume();
+  if (ac.state === 'suspended') ac.resume().catch(() => {});
   return ac;
+}
+
+/**
+ * Unlock the AudioContext within a synchronous user gesture.
+ * iOS Safari requires a sound to be PLAYED (not just resumed) inside the
+ * gesture call stack. Playing a 1-frame silent buffer achieves this.
+ * Must be called BEFORE any `await` in a gesture handler.
+ */
+function unlockAudioContext(ctx: AudioContext): void {
+  ctx.resume().catch(() => {});
+  try {
+    const buf = ctx.createBuffer(1, 1, ctx.sampleRate);
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(ctx.destination);
+    src.start(0);
+  } catch { /* ignore */ }
 }
 
 // ── Web Audio synthesis (instant, no CDN) ────────────────────────────────────
@@ -252,7 +269,6 @@ function playSynthChordNow(name: string, sound: SoundType, durationSecs: number,
 
 const sfCache   = new Map<string, SfPlayer>();
 const sfLoading = new Map<string, Promise<SfPlayer>>();
-let currentSfPlayer: SfPlayer | null = null;
 
 // Cancel token for the most recent pending play request.
 // When the user taps a new chord while samples are still loading,
@@ -262,7 +278,12 @@ let pendingCancel: (() => void) | null = null;
 function loadInstrument(ctx: AudioContext, name: string): Promise<SfPlayer> {
   if (sfCache.has(name)) return Promise.resolve(sfCache.get(name)!);
   if (!sfLoading.has(name)) {
-    const p = import('soundfont-player').then(sf => {
+    // RC3: 8-second timeout so DuckDuckGo (which blocks gleitz.github.io)
+    // doesn't hang indefinitely — falls through to synthesis fallback.
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('soundfont timeout')), 8000)
+    );
+    const fetchPromise = import('soundfont-player').then(sf => {
       // Handle both ESM named exports and CJS default-wrapped bundles
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const mod = (sf as any).instrument ? sf : ((sf as any).default ?? sf);
@@ -270,33 +291,31 @@ function loadInstrument(ctx: AudioContext, name: string): Promise<SfPlayer> {
         soundfont: 'MusyngKite',
         format: 'mp3',
       }) as Promise<SfPlayer>;
-    }).then(player => { sfCache.set(name, player); return player; });
+    }).then(player => {
+      sfCache.set(name, player);
+      sfLoading.delete(name); // clean up so the map stays small
+      return player;
+    });
+    const p = Promise.race([fetchPromise, timeoutPromise]).catch(err => {
+      sfLoading.delete(name); // RC2: clear on failure so next call retries
+      throw err;
+    }) as Promise<SfPlayer>;
     sfLoading.set(name, p);
   }
   return sfLoading.get(name)!;
 }
 
-async function playSampleChord(
+/**
+ * RC5: Schedule soundfont notes synchronously using a pre-resolved ctx + player.
+ * Called only after both are ready, so there are no awaits inside.
+ */
+function playSampleChord(
+  ctx: AudioContext,
+  player: SfPlayer,
   name: string,
-  sfName: string,
   durationSecs: number,
   strum: boolean,
-): Promise<void> {
-  const ctx = getAC();
-
-  // iOS Safari unlock: play a 1-frame silent buffer synchronously before any await
-  try {
-    const buf = ctx.createBuffer(1, 1, ctx.sampleRate);
-    const src = ctx.createBufferSource();
-    src.buffer = buf; src.connect(ctx.destination); src.start(0);
-  } catch { /* ignore */ }
-
-  if (currentSfPlayer) currentSfPlayer.stop();
-
-  const player = await loadInstrument(ctx, sfName);
-  if (ctx.state === 'suspended') { try { await ctx.resume(); } catch { /* ignore */ } }
-
-  currentSfPlayer = player;
+): void {
   const notes     = CHORD_MIDI[name] ?? generateVoicing(name) ?? [];
   const strumStep = strum ? 0.035 : 0;
   const playAt    = ctx.currentTime;
@@ -332,27 +351,33 @@ export function playClick(isAccent: boolean): void {
  * Begin loading soundfont samples for the given voice.
  * Call this on the first user interaction with the page (touchstart / mousedown)
  * so samples are ready (or well underway) by the time a chord is tapped.
+ *
+ * RC4: unlockAudioContext() is called synchronously BEFORE any await so the
+ * iOS gesture window is still open when the unlock fires.
+ *
  * Returns a promise that resolves to true if samples loaded, false if CDN blocked.
  */
-export function prewarmAudio(sound: SoundType = 'acoustic-guitar'): Promise<boolean> {
-  if (typeof window === 'undefined') return Promise.resolve(false);
-  const ctx = getAC();
-  if (ctx.state === 'suspended') ctx.resume().catch(() => {});
-  return loadInstrument(ctx, SF_NAMES[sound])
-    .then(() => true)
-    .catch(() => false);
+export async function prewarmAudio(sound: SoundType = 'acoustic-guitar'): Promise<boolean> {
+  if (typeof window === 'undefined') return false;
+  try {
+    const ctx = getAC();
+    unlockAudioContext(ctx); // must be before any await
+    await loadInstrument(ctx, SF_NAMES[sound]);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
  * Play a chord with the selected voice.
  *
- * Strategy:
- *  1. Create/unlock the AudioContext synchronously within the user gesture.
- *  2. Await ctx.resume() if needed (iOS always starts suspended).
- *  3. If samples are cached → play them immediately (best quality).
- *     If still loading → wait silently, then play samples once ready.
- *     No synthesis blast on top of the loading samples.
- *  4. Only fall back to quiet synthesis if the CDN fails entirely.
+ * RC1: unlockAudioContext() fires synchronously in the gesture BEFORE any await,
+ * which permanently unlocks iOS Safari's AudioContext for the page session.
+ *
+ * Fast path (samples cached): schedules notes synchronously — zero extra latency.
+ * Slow path (first load / CDN in progress): waits silently then plays.
+ * Fallback (CDN blocked after 8 s timeout): quiet synthesis instead.
  */
 export function playChordWithSound(name: string, sound: SoundType, durationSecs = 3): void {
   if (typeof window === 'undefined') return;
@@ -360,36 +385,38 @@ export function playChordWithSound(name: string, sound: SoundType, durationSecs 
   // Cancel any previous play that's still waiting for samples to load.
   if (pendingCancel) { pendingCancel(); pendingCancel = null; }
 
-  // Always call getAC() synchronously in the gesture — creates/unlocks AudioContext on iOS.
+  // Synchronous: create/unlock AudioContext within the gesture call stack.
   const ctx    = getAC();
-  const sfName = SF_NAMES[sound];
+  unlockAudioContext(ctx); // RC1: before any await
 
+  const sfName   = SF_NAMES[sound];
+  const isGuitar = !!SF_STRUM[sound];
+
+  // Fast path: samples already cached — schedule immediately, no awaits needed.
+  const cachedPlayer = sfCache.get(sfName);
+  if (cachedPlayer) {
+    playSampleChord(ctx, cachedPlayer, name, durationSecs, isGuitar);
+    return;
+  }
+
+  // Slow path: need to fetch from CDN (or wait for an in-progress fetch).
   let cancelled = false;
   pendingCancel = () => { cancelled = true; };
 
-  const play = async () => {
-    // Ensure context is running before scheduling audio
-    if (ctx.state !== 'running') {
-      try { await ctx.resume(); } catch { return; }
-    }
-    if (cancelled) return;
-
+  (async () => {
     try {
-      // Wait for samples (instant if already cached; otherwise silent while loading)
-      await loadInstrument(ctx, sfName);
+      const player = await loadInstrument(ctx, sfName);
       if (cancelled) return;
       pendingCancel = null;
-      await playSampleChord(name, sfName, durationSecs, !!SF_STRUM[sound]);
+      playSampleChord(ctx, player, name, durationSecs, isGuitar);
     } catch {
-      // CDN completely blocked — fall back to quiet synthesis as last resort
+      // CDN completely blocked — fall back to quiet synthesis as last resort.
       if (!cancelled) {
         pendingCancel = null;
         playSynthChordNow(name, sound, durationSecs, ctx);
       }
     }
-  };
-
-  play().catch(() => {});
+  })().catch(() => {});
 }
 
 /** Backward-compat wrapper — plays as acoustic guitar. */

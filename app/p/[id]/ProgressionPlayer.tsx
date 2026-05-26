@@ -1,8 +1,8 @@
 'use client';
 
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import Link from 'next/link';
-import { playChordWithSound } from '@/lib/audio';
+import { playChordWithSound, prewarmAudio } from '@/lib/audio';
 import type { Progression } from '@/lib/types';
 
 function PlayIcon({ size = 16 }: { size?: number }) {
@@ -28,11 +28,25 @@ export default function ProgressionPlayer({
   progression: Progression;
   detectedKey: string | null;
 }) {
-  const [playing,   setPlaying]   = useState(false);
-  const [activeIdx, setActiveIdx] = useState<number | null>(null);
+  const [playing,    setPlaying]    = useState(false);
+  const [activeIdx,  setActiveIdx]  = useState<number | null>(null);
+  const [audioReady, setAudioReady] = useState(false);
 
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const genRef   = useRef(0);
+
+  // RC6: preload soundfont samples on first user interaction, same as main editor.
+  useEffect(() => {
+    const prime = () => {
+      prewarmAudio('acoustic-guitar').then(ok => setAudioReady(ok));
+    };
+    document.addEventListener('touchstart', prime, { once: true, passive: true });
+    document.addEventListener('mousedown',  prime, { once: true });
+    return () => {
+      document.removeEventListener('touchstart', prime);
+      document.removeEventListener('mousedown',  prime);
+    };
+  }, []);
 
   const bpm     = progression.bpm     ?? 80;
   const timeSig = progression.timeSig ?? 4;
@@ -114,13 +128,20 @@ export default function ProgressionPlayer({
           {/* Play / Stop — primary */}
           <button
             onClick={playing ? stopPlayback : startPlayback}
+            disabled={!playing && !audioReady}
             className={`flex flex-1 items-center justify-center gap-2 rounded-2xl py-4 text-base font-semibold transition-colors ${
               playing
                 ? 'bg-stone-100 text-stone-700 hover:bg-stone-200'
-                : 'bg-indigo-600 text-white hover:bg-indigo-700'
+                : audioReady
+                  ? 'bg-indigo-600 text-white hover:bg-indigo-700'
+                  : 'bg-indigo-300 text-white cursor-default'
             }`}
           >
-            {playing ? <><StopIcon /> Stop</> : <><PlayIcon /> Play</>}
+            {playing
+              ? <><StopIcon /> Stop</>
+              : audioReady
+                ? <><PlayIcon /> Play</>
+                : 'Loading…'}
           </button>
 
           {/* Remix — secondary */}

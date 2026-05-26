@@ -1614,8 +1614,9 @@ export default function CreatePage() {
   // This gives the samples a head-start so they're ready (or close to it)
   // by the time the user taps a chord.
   useEffect(() => {
+    // RC7: pass the currently-selected voice so the right soundfont is preloaded.
     const prime = () => {
-      prewarmAudio('acoustic-guitar').then(() => setAudioReady(true));
+      prewarmAudio(sound).then(ok => setAudioReady(ok));
     };
     document.addEventListener('touchstart', prime, { once: true, passive: true });
     document.addEventListener('mousedown',  prime, { once: true });
@@ -1623,8 +1624,7 @@ export default function CreatePage() {
       document.removeEventListener('touchstart', prime);
       document.removeEventListener('mousedown',  prime);
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [sound]); // re-register when the voice changes
 
   // Sound helper — routes to the selected voice
   const play = useCallback(
