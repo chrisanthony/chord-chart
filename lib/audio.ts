@@ -126,25 +126,8 @@ function getAC(): AudioContext {
     compressor.release.value = 0.3;
     compressor.connect(ac.destination);
   }
-  if (ac.state === 'suspended') ac.resume().catch(() => {});
+  // Do NOT call resume() here — playChordWithSound awaits it properly per-tap.
   return ac;
-}
-
-/**
- * Unlock the AudioContext within a synchronous user gesture.
- * iOS Safari requires a sound to be PLAYED (not just resumed) inside the
- * gesture call stack. Playing a 1-frame silent buffer achieves this.
- * Must be called BEFORE any `await` in a gesture handler.
- */
-function unlockAudioContext(ctx: AudioContext): void {
-  ctx.resume().catch(() => {});
-  try {
-    const buf = ctx.createBuffer(1, 1, ctx.sampleRate);
-    const src = ctx.createBufferSource();
-    src.buffer = buf;
-    src.connect(ctx.destination);
-    src.start(0);
-  } catch { /* ignore */ }
 }
 
 // ── Web Audio synthesis (instant, no CDN) ────────────────────────────────────
@@ -270,11 +253,6 @@ function playSynthChordNow(name: string, sound: SoundType, durationSecs: number,
 const sfCache   = new Map<string, SfPlayer>();
 const sfLoading = new Map<string, Promise<SfPlayer>>();
 
-// Cancel token for the most recent pending play request.
-// When the user taps a new chord while samples are still loading,
-// the previous pending play is cancelled so only the latest chord plays.
-let pendingCancel: (() => void) | null = null;
-
 function loadInstrument(ctx: AudioContext, name: string): Promise<SfPlayer> {
   if (sfCache.has(name)) return Promise.resolve(sfCache.get(name)!);
   if (!sfLoading.has(name)) {
@@ -348,75 +326,67 @@ export function playClick(isAccent: boolean): void {
 }
 
 /**
- * Begin loading soundfont samples for the given voice.
- * Call this on the first user interaction with the page (touchstart / mousedown)
- * so samples are ready (or well underway) by the time a chord is tapped.
- *
- * RC4: unlockAudioContext() is called synchronously BEFORE any await so the
- * iOS gesture window is still open when the unlock fires.
- *
- * Returns a promise that resolves to true if samples loaded, false if CDN blocked.
+ * Begin loading soundfont samples for the given voice in the background.
+ * Call this on the first user interaction (touchstart / mousedown) so samples
+ * are cached and ready by the time the user taps a chord.
+ * iOS AudioContext unlock is handled per-tap inside playChordWithSound.
  */
-export async function prewarmAudio(sound: SoundType = 'acoustic-guitar'): Promise<boolean> {
-  if (typeof window === 'undefined') return false;
-  try {
-    const ctx = getAC();
-    unlockAudioContext(ctx); // must be before any await
-    await loadInstrument(ctx, SF_NAMES[sound]);
-    return true;
-  } catch {
-    return false;
+export function prewarmAudio(sound: SoundType = 'acoustic-guitar'): void {
+  if (typeof window === 'undefined') return;
+  const ctx = getAC();
+  const sfName = SF_NAMES[sound];
+  if (!sfCache.has(sfName) && !sfLoading.has(sfName)) {
+    loadInstrument(ctx, sfName).catch(() => {}); // silent failure on DuckDuckGo
   }
 }
 
 /**
  * Play a chord with the selected voice.
  *
- * RC1: unlockAudioContext() fires synchronously in the gesture BEFORE any await,
- * which permanently unlocks iOS Safari's AudioContext for the page session.
+ * iOS unlock strategy: `ctx.resume()` is called synchronously at the top of this
+ * async function and then awaited. iOS WebKit passes the user-activation token
+ * through this specific Promise, so the context is guaranteed running before any
+ * audio is scheduled — even on first tap from a previously suspended context.
  *
- * Fast path (samples cached): schedules notes synchronously — zero extra latency.
- * Slow path (first load / CDN in progress): waits silently then plays.
- * Fallback (CDN blocked after 8 s timeout): quiet synthesis instead.
+ * Playback strategy:
+ *  • Samples cached  → play samples immediately (best quality, no latency).
+ *  • Samples missing → play synthesis immediately (instant, no CDN wait),
+ *                      and start CDN load in background so the next tap uses samples.
+ *
+ * DuckDuckGo (CDN blocked): synthesis plays on every tap — no silence, no 8s wait.
  */
-export function playChordWithSound(name: string, sound: SoundType, durationSecs = 3): void {
+export async function playChordWithSound(
+  name: string,
+  sound: SoundType,
+  durationSecs = 3,
+): Promise<void> {
   if (typeof window === 'undefined') return;
 
-  // Cancel any previous play that's still waiting for samples to load.
-  if (pendingCancel) { pendingCancel(); pendingCancel = null; }
+  const ctx = getAC();
 
-  // Synchronous: create/unlock AudioContext within the gesture call stack.
-  const ctx    = getAC();
-  unlockAudioContext(ctx); // RC1: before any await
-
-  const sfName   = SF_NAMES[sound];
-  const isGuitar = !!SF_STRUM[sound];
-
-  // Fast path: samples already cached — schedule immediately, no awaits needed.
-  const cachedPlayer = sfCache.get(sfName);
-  if (cachedPlayer) {
-    playSampleChord(ctx, cachedPlayer, name, durationSecs, isGuitar);
-    return;
+  // Reliably unlock iOS AudioContext.
+  // ctx.resume() must be called synchronously (before any other await).
+  // iOS passes the user-activation token through this Promise specifically.
+  // Once it resolves, ctx.state === 'running' and ctx.currentTime > 0.
+  if (ctx.state !== 'running') {
+    try { await ctx.resume(); } catch { /* ignore — audio stays silent */ }
   }
 
-  // Slow path: need to fetch from CDN (or wait for an in-progress fetch).
-  let cancelled = false;
-  pendingCancel = () => { cancelled = true; };
+  const sfName      = SF_NAMES[sound];
+  const isGuitar    = !!SF_STRUM[sound];
+  const cachedPlayer = sfCache.get(sfName);
 
-  (async () => {
-    try {
-      const player = await loadInstrument(ctx, sfName);
-      if (cancelled) return;
-      pendingCancel = null;
-      playSampleChord(ctx, player, name, durationSecs, isGuitar);
-    } catch {
-      // CDN completely blocked — fall back to quiet synthesis as last resort.
-      if (!cancelled) {
-        pendingCancel = null;
-        playSynthChordNow(name, sound, durationSecs, ctx);
-      }
+  if (cachedPlayer) {
+    // Samples ready → play at the correct current time (no strum-collapse risk).
+    playSampleChord(ctx, cachedPlayer, name, durationSecs, isGuitar);
+  } else {
+    // Samples not ready → synthesis is the instant fallback.
+    playSynthChordNow(name, sound, durationSecs, ctx);
+    // Kick off CDN load in the background (no await — don't block this tap).
+    if (!sfLoading.has(sfName)) {
+      loadInstrument(ctx, sfName).catch(() => {}); // silent failure on DuckDuckGo
     }
-  })().catch(() => {});
+  }
 }
 
 /** Backward-compat wrapper — plays as acoustic guitar. */

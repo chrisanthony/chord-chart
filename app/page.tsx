@@ -1536,7 +1536,6 @@ export default function CreatePage() {
   const [saveStatus, setSaveStatus]   = useState<'idle' | 'saving' | 'saved'>('idle');
   const [copiedToast, setCopiedToast] = useState(false);
   const [isRolled,   setIsRolled]     = useState(false); // true when chords came from dice roll
-  const [audioReady,  setAudioReady]  = useState(false); // true once soundfont samples are loaded
 
   // ── Key mode ──
   // 'auto'  : key floats with chord detection; user can lock it in
@@ -1613,18 +1612,18 @@ export default function CreatePage() {
   // Preload soundfont samples on the first user interaction with the page.
   // This gives the samples a head-start so they're ready (or close to it)
   // by the time the user taps a chord.
+  // Start loading soundfont samples for the selected voice on first user interaction,
+  // so they're cached and ready by the time a chord is tapped.
+  // iOS AudioContext unlock is handled per-tap inside playChordWithSound.
   useEffect(() => {
-    // RC7: pass the currently-selected voice so the right soundfont is preloaded.
-    const prime = () => {
-      prewarmAudio(sound).then(ok => setAudioReady(ok));
-    };
+    const prime = () => prewarmAudio(sound);
     document.addEventListener('touchstart', prime, { once: true, passive: true });
     document.addEventListener('mousedown',  prime, { once: true });
     return () => {
       document.removeEventListener('touchstart', prime);
       document.removeEventListener('mousedown',  prime);
     };
-  }, [sound]); // re-register when the voice changes
+  }, [sound]);
 
   // Sound helper — routes to the selected voice
   const play = useCallback(
@@ -2195,14 +2194,6 @@ export default function CreatePage() {
         {copiedToast && (
           <div className="absolute bottom-full left-4 right-4 mb-3 z-50 rounded-2xl bg-emerald-600/80 px-5 py-3 text-center text-sm font-semibold text-white pointer-events-none">
             Link copied to clipboard
-          </div>
-        )}
-
-        {/* Audio loading indicator — shown until soundfont samples are ready */}
-        {!audioReady && (
-          <div className="mb-1.5 flex items-center gap-1 text-[10px] text-stone-300">
-            <SpinnerIcon size={9} />
-            <span>Loading audio…</span>
           </div>
         )}
 
