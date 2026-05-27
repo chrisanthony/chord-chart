@@ -1561,6 +1561,8 @@ export default function CreatePage() {
   const metronomeGenRef   = useRef(0); // incremented on each stop; stale closures bail early
   const chordsRef      = useRef(chords);
   const bpmRef         = useRef(bpm);
+  const bpmInputRef    = useRef<HTMLInputElement>(null);
+  const bpmDragRef     = useRef<{ startX: number; startBpm: number; moved: boolean } | null>(null);
   const loopingRef     = useRef(looping);
   const timeSigRef     = useRef(timeSigBeats);
   const metronomeRef   = useRef(metronome);
@@ -1689,6 +1691,30 @@ export default function CreatePage() {
   function unlockKey() {
     setKeyLocked(false);
     setPickedKey(null);
+  }
+
+  // ── BPM swipe-to-adjust ──
+
+  function onBpmPointerDown(e: React.PointerEvent<HTMLDivElement>) {
+    e.currentTarget.setPointerCapture(e.pointerId);
+    bpmDragRef.current = { startX: e.clientX, startBpm: bpm, moved: false };
+  }
+
+  function onBpmPointerMove(e: React.PointerEvent<HTMLDivElement>) {
+    const drag = bpmDragRef.current;
+    if (!drag) return;
+    const dx = e.clientX - drag.startX;
+    if (Math.abs(dx) > 4) drag.moved = true;
+    const next = Math.min(220, Math.max(40, Math.round(drag.startBpm + dx / 3)));
+    setBpm(next);
+  }
+
+  function onBpmPointerUp() {
+    if (!bpmDragRef.current) return;
+    if (!bpmDragRef.current.moved) {
+      bpmInputRef.current?.select();
+    }
+    bpmDragRef.current = null;
   }
 
   // ── Animation helpers ──
@@ -1984,129 +2010,139 @@ export default function CreatePage() {
       <main className="flex-1 overflow-y-auto px-4 py-4 space-y-4 [scrollbar-gutter:stable]">
         <div className="space-y-2">
 
-          {/* Auto title */}
-          <div className="relative">
-            <input type="text" placeholder="Song title" value={title}
-              onChange={e => { setTitle(e.target.value); setTitleIsAuto(false); }}
-              onBlur={() => { if (!title.trim()) setTitleIsAuto(true); }}
-              className="w-full rounded-xl border border-stone-200 bg-white px-4 py-3 pr-16 text-lg font-semibold placeholder-stone-300 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            />
-            {titleIsAuto && title && (
-              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] font-semibold uppercase tracking-widest text-stone-300 pointer-events-none select-none">
-                auto
-              </span>
-            )}
-          </div>
-
-          {/* Key row — always visible */}
+          {/* Song controls — Title · Key · BPM */}
           <div className="rounded-xl border border-stone-200 bg-white overflow-hidden">
-              <div className="flex items-center gap-2 px-4 py-2.5">
-                <span className="text-xs font-semibold uppercase tracking-widest text-stone-300 shrink-0">Key</span>
 
-                {/* Key name + badge */}
-                <div className="flex items-center gap-1.5 flex-1 min-w-0">
-                  {displayKey ? (
-                    keyMode === 'manual' ? (
-                      /* Tappable in manual mode — tap the key name to re-open picker */
-                      <button onClick={openPicker}
-                        className="flex items-center gap-1.5 text-left group min-w-0">
-                        <span className="text-sm font-semibold text-stone-700 truncate group-hover:underline group-active:text-indigo-600 transition-colors">
-                          {displayKey}
-                        </span>
-                        {keyBadge()}
-                      </button>
-                    ) : (
-                      <><span className="text-sm font-semibold text-stone-700 truncate">{displayKey}</span>{keyBadge()}</>
-                    )
-                  ) : (
-                    <span className="text-sm text-stone-300">Pick a key…</span>
-                  )}
-                </div>
-
-                {/* Two fixed buttons: Manual/Auto  |  Lock/Unlock */}
-                <div className="flex items-center gap-0.5 shrink-0">
-                  {keyMode === 'auto' ? (
-                    <button onClick={showKeyPicker ? closePicker : switchToManual}
-                      className={`rounded-lg px-2.5 py-1.5 text-xs font-semibold transition-colors ${
-                        showKeyPicker ? 'bg-stone-100 text-stone-500' : 'text-stone-500 hover:bg-stone-100'
-                      }`}>
-                      {showKeyPicker ? 'Cancel' : 'Manual'}
-                    </button>
-                  ) : (
-                    <button onClick={switchToAuto}
-                      className="rounded-lg px-2.5 py-1.5 text-xs font-semibold text-indigo-500 hover:bg-indigo-50 transition-colors">
-                      Auto
-                    </button>
-                  )}
-
-                  <span className="text-stone-200 select-none mx-0.5">|</span>
-
-                  {keyMode === 'manual' ? (
-                    /* In manual mode: Change opens the picker; Cancel closes it */
-                    <button onClick={showKeyPicker ? closePicker : openPicker}
-                      className={`rounded-lg px-2.5 py-1.5 text-xs font-semibold transition-colors ${
-                        showKeyPicker ? 'bg-stone-100 text-stone-500' : 'text-stone-600 hover:bg-stone-100'
-                      }`}>
-                      {showKeyPicker ? 'Cancel' : 'Change'}
-                    </button>
-                  ) : keyLocked ? (
-                    <button onClick={unlockKey}
-                      className="rounded-lg px-2.5 py-1.5 text-xs font-semibold text-indigo-500 hover:bg-indigo-50 transition-colors">
-                      Unlock
-                    </button>
-                  ) : (
-                    <button onClick={lockKey} disabled={!displayKey}
-                      className={`rounded-lg px-2.5 py-1.5 text-xs font-semibold transition-colors ${
-                        displayKey ? 'text-stone-600 hover:bg-stone-100' : 'text-stone-200 cursor-default'
-                      }`}>
-                      Lock
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {/* Inline key picker (Manual mode flow) */}
-              {showKeyPicker && (
-                <div className="border-t border-stone-100 px-4 py-3 space-y-2.5">
-                  <div className="flex flex-wrap gap-1.5">
-                    {ROOTS.map(root => (
-                      <button key={root}
-                        onClick={() => setPickerRoot(root === pickerRoot ? null : root)}
-                        className={`rounded-lg px-2.5 py-1.5 text-sm font-semibold transition-colors ${
-                          pickerRoot === root ? 'bg-indigo-600 text-white' : 'bg-stone-100 text-stone-600 hover:bg-stone-200'
-                        }`}>
-                        {root}
-                      </button>
-                    ))}
-                  </div>
-                  {pickerRoot && (
-                    <div className="flex gap-2">
-                      <button onClick={() => applyKey(pickerRoot, 'major')}
-                        className="flex-1 rounded-xl bg-indigo-50 py-2 text-sm font-semibold text-indigo-700 hover:bg-indigo-100 transition-colors">
-                        {pickerRoot} Major
-                      </button>
-                      <button onClick={() => applyKey(pickerRoot, 'minor')}
-                        className="flex-1 rounded-xl bg-stone-100 py-2 text-sm font-semibold text-stone-700 hover:bg-stone-200 transition-colors">
-                        {pickerRoot} Minor
-                      </button>
-                    </div>
-                  )}
-                </div>
+            {/* Title row */}
+            <div className="flex items-center gap-2 px-4 py-2.5">
+              <span className="text-xs font-semibold uppercase tracking-widest text-stone-300 shrink-0">Title</span>
+              <input type="text" placeholder="Song title" value={title}
+                onChange={e => { setTitle(e.target.value); setTitleIsAuto(false); }}
+                onBlur={() => { if (!title.trim()) setTitleIsAuto(true); }}
+                className="flex-1 min-w-0 bg-transparent text-sm font-semibold text-stone-700 placeholder-stone-300 focus:outline-none"
+              />
+              {titleIsAuto && title && (
+                <span className="text-[10px] font-semibold uppercase tracking-widest text-stone-300 shrink-0 pointer-events-none select-none">
+                  auto
+                </span>
               )}
             </div>
 
-          {/* BPM + Time Signature */}
-          <div className="rounded-xl border border-stone-200 bg-white px-4 py-3 space-y-2.5">
-            <div className="flex items-center justify-between">
-              <label className="text-sm font-medium text-stone-500">BPM</label>
-              <input type="number" min={40} max={220} value={bpm}
+            {/* Key row */}
+            <div className="flex items-center gap-2 px-4 py-2.5 border-t border-stone-100">
+              <span className="text-xs font-semibold uppercase tracking-widest text-stone-300 shrink-0">Key</span>
+
+              {/* Key name + badge */}
+              <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                {displayKey ? (
+                  keyMode === 'manual' ? (
+                    /* Tappable in manual mode — tap the key name to re-open picker */
+                    <button onClick={openPicker}
+                      className="flex items-center gap-1.5 text-left group min-w-0">
+                      <span className="text-sm font-semibold text-stone-700 truncate group-hover:underline group-active:text-indigo-600 transition-colors">
+                        {displayKey}
+                      </span>
+                      {keyBadge()}
+                    </button>
+                  ) : (
+                    <><span className="text-sm font-semibold text-stone-700 truncate">{displayKey}</span>{keyBadge()}</>
+                  )
+                ) : (
+                  <span className="text-sm text-stone-300">Pick a key…</span>
+                )}
+              </div>
+
+              {/* Two fixed buttons: Manual/Auto  |  Lock/Unlock */}
+              <div className="flex items-center gap-0.5 shrink-0">
+                {keyMode === 'auto' ? (
+                  <button onClick={showKeyPicker ? closePicker : switchToManual}
+                    className={`rounded-lg px-2.5 py-1.5 text-xs font-semibold transition-colors ${
+                      showKeyPicker ? 'bg-stone-100 text-stone-500' : 'text-stone-500 hover:bg-stone-100'
+                    }`}>
+                    {showKeyPicker ? 'Cancel' : 'Manual'}
+                  </button>
+                ) : (
+                  <button onClick={switchToAuto}
+                    className="rounded-lg px-2.5 py-1.5 text-xs font-semibold text-indigo-500 hover:bg-indigo-50 transition-colors">
+                    Auto
+                  </button>
+                )}
+
+                <span className="text-stone-200 select-none mx-0.5">|</span>
+
+                {keyMode === 'manual' ? (
+                  /* In manual mode: Change opens the picker; Cancel closes it */
+                  <button onClick={showKeyPicker ? closePicker : openPicker}
+                    className={`rounded-lg px-2.5 py-1.5 text-xs font-semibold transition-colors ${
+                      showKeyPicker ? 'bg-stone-100 text-stone-500' : 'text-stone-600 hover:bg-stone-100'
+                    }`}>
+                    {showKeyPicker ? 'Cancel' : 'Change'}
+                  </button>
+                ) : keyLocked ? (
+                  <button onClick={unlockKey}
+                    className="rounded-lg px-2.5 py-1.5 text-xs font-semibold text-indigo-500 hover:bg-indigo-50 transition-colors">
+                    Unlock
+                  </button>
+                ) : (
+                  <button onClick={lockKey} disabled={!displayKey}
+                    className={`rounded-lg px-2.5 py-1.5 text-xs font-semibold transition-colors ${
+                      displayKey ? 'text-stone-600 hover:bg-stone-100' : 'text-stone-200 cursor-default'
+                    }`}>
+                    Lock
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* BPM row — swipe left/right to adjust, tap to type */}
+            <div
+              className="flex items-center gap-2 px-4 py-2 border-t border-stone-100 cursor-ew-resize touch-none select-none"
+              onPointerDown={onBpmPointerDown}
+              onPointerMove={onBpmPointerMove}
+              onPointerUp={onBpmPointerUp}
+            >
+              <span className="text-xs font-semibold uppercase tracking-widest text-stone-300 shrink-0">BPM</span>
+              <span className="text-sm text-stone-300 leading-none">‹ ›</span>
+              <div className="flex-1" />
+              <input
+                ref={bpmInputRef}
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                value={bpm}
                 onChange={e => { const n = parseInt(e.target.value, 10); if (!isNaN(n)) setBpm(Math.min(220, Math.max(40, n))); }}
-                className="w-16 rounded-lg border border-stone-200 px-2 py-1 text-center text-sm font-semibold tabular-nums focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                className="w-12 text-center text-sm font-semibold tabular-nums focus:outline-none bg-transparent text-stone-700 pointer-events-none focus:pointer-events-auto"
               />
             </div>
-            <input type="range" min={40} max={220} value={bpm}
-              onChange={e => setBpm(Number(e.target.value))} className="w-full accent-indigo-600" />
 
+            {/* Inline key picker (Manual mode flow) */}
+            {showKeyPicker && (
+              <div className="border-t border-stone-100 px-4 py-3 space-y-2.5">
+                <div className="flex flex-wrap gap-1.5">
+                  {ROOTS.map(root => (
+                    <button key={root}
+                      onClick={() => setPickerRoot(root === pickerRoot ? null : root)}
+                      className={`rounded-lg px-2.5 py-1.5 text-sm font-semibold transition-colors ${
+                        pickerRoot === root ? 'bg-indigo-600 text-white' : 'bg-stone-100 text-stone-600 hover:bg-stone-200'
+                      }`}>
+                      {root}
+                    </button>
+                  ))}
+                </div>
+                {pickerRoot && (
+                  <div className="flex gap-2">
+                    <button onClick={() => applyKey(pickerRoot, 'major')}
+                      className="flex-1 rounded-xl bg-indigo-50 py-2 text-sm font-semibold text-indigo-700 hover:bg-indigo-100 transition-colors">
+                      {pickerRoot} Major
+                    </button>
+                    <button onClick={() => applyKey(pickerRoot, 'minor')}
+                      className="flex-1 rounded-xl bg-stone-100 py-2 text-sm font-semibold text-stone-700 hover:bg-stone-200 transition-colors">
+                      {pickerRoot} Minor
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
 
