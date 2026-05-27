@@ -597,13 +597,18 @@ export async function analyzeDecoded(
       )));
   onProgress?.(68);
 
-  // ── Fixed-window chord detection ──────────────────────────────────────────
-  // 1.5 s windows stepped every 0.5 s — completely independent of BPM.
-  // At 80–160 BPM a 1.5 s window covers 2–4 beats, long enough to average out
-  // short melody notes while fitting within a typical chord region.
-  // Previous beat-synchronous approaches broke badly when BPM was wrong.
-  const WIN_LEN  = Math.floor(sampleRate * 1.5);
-  const STEP_LEN = Math.floor(sampleRate * 0.5);
+  // ── BPM-adaptive chord detection windows ──────────────────────────────────
+  // Window = 1 musical bar at the detected tempo, clamped to [1.5 s, 4.0 s].
+  // Slow songs (60–80 BPM) get longer windows that capture full chord cycles;
+  // fast songs stay near the proven 1.5 s baseline.
+  // Not strictly beat-synchronous — proportional to bar length, which is
+  // robust to ~20% BPM errors unlike grid-aligned approaches.
+  const secPerBar = (60 / bpm) * 4;
+  const WIN_SECS  = Math.min(4.0, Math.max(1.5, secPerBar));
+  const STEP_SECS = WIN_SECS / 3;                               // 3 steps per bar
+  const WIN_LEN   = Math.floor(sampleRate * WIN_SECS);
+  const STEP_LEN  = Math.floor(sampleRate * STEP_SECS);
+  const NUM_SUBS  = Math.max(6, Math.round(WIN_SECS / 0.25));  // ~250 ms sub-windows
   const labels: string[] = [];
 
   for (let t = 0; t + WIN_LEN <= slice.length; t += STEP_LEN) {
@@ -614,13 +619,13 @@ export async function analyzeDecoded(
     hannWindow(bassHanned);
     const bassRoots = detectBassRoots(chromagramBass(bassHanned, sampleRate), diatonic);
 
-    // Full-spectrum: median of 6 × 250 ms sub-windows (hannWindow applied inside)
+    // Full-spectrum: median of NUM_SUBS × ~250 ms sub-windows (hannWindow applied inside)
     const { chord, confidence } = matchChord(
-      chromagramMedian(seg, sampleRate, 6),
+      chromagramMedian(seg, sampleRate, NUM_SUBS),
       diatonic,
       bassRoots,
     );
-    if (confidence > 0.20) labels.push(chord); // raised from 0.14
+    if (confidence > 0.20) labels.push(chord);
   }
 
   // Mode-filter: replace each label with the most common chord in a ±2-step

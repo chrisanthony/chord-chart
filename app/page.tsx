@@ -1274,16 +1274,29 @@ function ImportSheet({
             </>
           )}
 
-          {/* Progress bar */}
+          {/* Analysis loading state */}
           {status === 'analyzing' && (
-            <div className="space-y-1.5">
-              <div className="h-1.5 rounded-full bg-stone-100 overflow-hidden">
+            <div className="space-y-3">
+              {/* Equalizer animation */}
+              <div className="flex items-end gap-0.5 h-8 px-0.5">
+                {[...Array(12)].map((_, i) => (
+                  <div
+                    key={i}
+                    className="flex-1 rounded-sm bg-indigo-400 origin-bottom"
+                    style={{
+                      height: '100%',
+                      animation: 'eq-pulse 0.9s ease-in-out infinite',
+                      animationDelay: `${(i * 0.08).toFixed(2)}s`,
+                    }}
+                  />
+                ))}
+              </div>
+              {/* Progress bar */}
+              <div className="h-1 rounded-full bg-stone-100 overflow-hidden">
                 <div className="h-full rounded-full bg-indigo-500 transition-all duration-300"
                   style={{ width: `${progress}%` }} />
               </div>
-              <p className="flex items-center gap-1.5 text-xs text-stone-400">
-                <SpinnerIcon size={11} /> {statusMsg}
-              </p>
+              <p className="text-xs text-stone-400">{statusMsg}</p>
             </div>
           )}
 

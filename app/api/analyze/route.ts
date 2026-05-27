@@ -3,28 +3,36 @@ import { NextRequest, NextResponse } from 'next/server';
 const GEMINI_URL =
   'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent';
 
-const PROMPT = `Listen to this audio and identify the chord structure by section.
-Focus on the harmonic accompaniment — rhythm guitar, chord pads, piano harmony, and bass line.
-Ignore lead melodies, vocal lines, solos, and individually picked notes.
-The output should reflect the underlying chord progression, not melodic content.
-Return ONLY a JSON object (no markdown, no extra text) with this shape:
+const PROMPT = `This is a full band recording. Analyze the underlying harmonic chord structure.
+
+Listen for the chord movement played by rhythm instruments — acoustic or electric
+guitar strumming patterns, piano or keyboard chord pads, and bass notes outlining
+the root. Mentally filter out: drum kit, lead guitar solos, melodic vocal lines,
+and any single-note runs or fills.
+
+Identify the repeating chord progression for each distinct section. Chord changes
+typically land on the beat and repeat every 1–4 bars. Focus on the harmonic loop
+that recurs throughout each section — most songs are built around a core 2–4 chord
+sequence that repeats.
+
+Return ONLY valid JSON (no markdown) in this exact format:
 {
   "sections": [
-    { "name": "Verse",  "chords": ["G", "Em", "C", "D"] },
-    { "name": "Chorus", "chords": ["C", "G", "Am", "F"] }
+    { "name": "Verse", "chords": ["Am", "F", "C", "G"] },
+    { "name": "Chorus", "chords": ["F", "C", "G", "Am"] }
   ],
-  "key": "G major",
+  "key": "A minor",
   "bpm": 120
 }
+
 Rules:
-- sections: identify 1–4 distinct parts of the song.
-  Common names: Verse, Chorus, Bridge, Intro, Outro, Pre-Chorus.
-  If one chord pattern repeats throughout, use a single section named "Main".
-- chords per section: 2–8 chord names forming that section's repeating loop.
-  Standard notation: C (major), Cm (minor), C7 (dominant 7), Cmaj7, Cm7.
-- key: "NoteName major|minor", e.g. "G major" or "B minor".
-- bpm: integer tempo estimate.
-- Always make a best-guess — never return empty arrays.`;
+- sections: 1–4 distinct song parts (Verse/Chorus/Bridge/Intro/Outro/Pre-Chorus,
+  or "Main" if the whole song uses one progression)
+- chords: the repeating sequence of 2–8 chords per section, in order, in standard
+  notation (C, Cm, C7, Cmaj7, Cm7, Csus2, etc.)
+- key: "NoteName major|minor" e.g. "G major" or "B minor"
+- bpm: integer tempo estimate
+- Always make a best-guess — never return empty arrays`;
 
 interface GeminiSection { name?: unknown; chords?: unknown; }
 
