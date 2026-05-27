@@ -24,8 +24,15 @@ async function getRedis() {
 export async function saveProgression(p: Progression): Promise<void> {
   const redis = await getRedis();
   if (redis) {
-    await redis.set(`p:${p.id}`, JSON.stringify(p));
+    try {
+      await redis.set(`p:${p.id}`, JSON.stringify(p));
+      console.log('[store] saved to Redis:', p.id);
+    } catch (e) {
+      console.error('[store] Redis set failed:', e);
+      mem.set(p.id, p);
+    }
   } else {
+    console.warn('[store] no Redis — saving to memory:', p.id);
     mem.set(p.id, p);
   }
 }
@@ -33,9 +40,16 @@ export async function saveProgression(p: Progression): Promise<void> {
 export async function getProgression(id: string): Promise<Progression | null> {
   const redis = await getRedis();
   if (redis) {
-    const raw = await redis.get<string>(`p:${id}`);
-    if (!raw) return null;
-    return typeof raw === 'string' ? JSON.parse(raw) : raw;
+    try {
+      const raw = await redis.get<string>(`p:${id}`);
+      console.log('[store] Redis get:', id, '→', raw ? 'found' : 'null');
+      if (!raw) return null;
+      return typeof raw === 'string' ? JSON.parse(raw) : raw;
+    } catch (e) {
+      console.error('[store] Redis get failed:', e);
+      return null;
+    }
   }
+  console.warn('[store] no Redis — checking memory:', id);
   return mem.get(id) ?? null;
 }
